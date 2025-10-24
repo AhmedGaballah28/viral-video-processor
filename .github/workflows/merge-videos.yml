@@ -52,36 +52,71 @@ jobs:
         python merge-videos.py
         echo "video_created=true" >> $GITHUB_OUTPUT
         ls -la final.mp4
+        echo "FILE_SIZE=$(stat -c%s final.mp4)" >> $GITHUB_OUTPUT
     
-    - name: Upload to File.io
+    - name: Upload to Multiple Services
       id: upload
       run: |
-        # Upload to file.io (FREE, 14 days retention)
-        response=$(curl -F "file=@final.mp4" https://file.io)
-        echo "Response: $response"
-        VIDEO_URL=$(echo $response | python3 -c "import sys, json; print(json.load(sys.stdin)['link'])")
-        echo "VIDEO_URL=$VIDEO_URL" >> $GITHUB_OUTPUT
-        echo "Video uploaded to: $VIDEO_URL"
-        echo "$VIDEO_URL" > video_url.txt
+        echo "Uploading video ($(stat -c%s final.mp4) bytes)..."
+        
+        # Try multiple upload services for reliability
+        
+        # Option 1: Upload to 0x0.st (reliable, 512MB limit, 365 days)
+        echo "Trying 0x0.st..."
+        UPLOAD_URL=$(curl -F "file=@final.mp4" https://0x0.st)
+        
+        if [ ! -z "$UPLOAD_URL" ] && [[ $UPLOAD_URL == http* ]]; then
+          echo "✓ Upload successful to 0x0.st"
+          echo "VIDEO_URL=$UPLOAD_URL" >> $GITHUB_OUTPUT
+        else
+          echo "0x0.st failed, trying alternative..."
+          
+          # Option 2: Upload to tmpfiles.org (100MB limit, shorter retention)
+          UPLOAD_URL=$(curl -F "file=@final.mp4" https://tmpfiles.org/api/v1/upload | python3 -c "import sys, json; data = json.load(sys.stdin); print(data['data']['url'].replace('/tmpfiles.org/', '/tmpfiles.org/dl/'))")
+          
+          if [ ! -z "$UPLOAD_URL" ] && [[ $UPLOAD_URL == http* ]]; then
+            echo "✓ Upload successful to tmpfiles.org"
+            echo "VIDEO_URL=$UPLOAD_URL" >> $GITHUB_OUTPUT
+          else
+            echo "⚠ External upload failed, using GitHub artifacts only"
+            echo "VIDEO_URL=Check artifacts below" >> $GITHUB_OUTPUT
+          fi
+        fi
+        
+        echo "Download URL: $UPLOAD_URL"
+        echo "$UPLOAD_URL" > video_url.txt
     
-    - name: Save Video as Artifact
+    - name: Save Video as Artifact (Backup)
       uses: actions/upload-artifact@v4
       with:
-        name: final-video
+        name: final-video-${{ github.run_number }}
         path: |
           final.mp4
           video_url.txt
         retention-days: 7
+        compression-level: 6
     
     - name: Create Summary
       run: |
         echo "## ✅ Video Processed Successfully!" >> $GITHUB_STEP_SUMMARY
         echo "" >> $GITHUB_STEP_SUMMARY
-        echo "### 📥 Download URL:" >> $GITHUB_STEP_SUMMARY
-        echo "${{ steps.upload.outputs.VIDEO_URL }}" >> $GITHUB_STEP_SUMMARY
-        echo "" >> $GITHUB_STEP_SUMMARY
-        echo "**Valid for:** 14 days" >> $GITHUB_STEP_SUMMARY
+        
+        if [[ "${{ steps.upload.outputs.VIDEO_URL }}" == http* ]]; then
+          echo "### 📥 Direct Download URL:" >> $GITHUB_STEP_SUMMARY
+          echo "${{ steps.upload.outputs.VIDEO_URL }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Valid for:** 7-365 days (depending on service)" >> $GITHUB_STEP_SUMMARY
+        else
+          echo "### 📥 Download from Artifacts:" >> $GITHUB_STEP_SUMMARY
+          echo "Click on 'final-video-${{ github.run_number }}' artifact below to download" >> $GITHUB_STEP_SUMMARY
+        fi
+        
         echo "" >> $GITHUB_STEP_SUMMARY
         echo "### 📝 Video Details:" >> $GITHUB_STEP_SUMMARY
+        echo "- **File Size:** $(numfmt --to=iec-i --suffix=B ${{ steps.process.outputs.FILE_SIZE }})" >> $GITHUB_STEP_SUMMARY
         echo "- **Hook:** ${{ github.event.client_payload.hook_text || inputs.hook_text }}" >> $GITHUB_STEP_SUMMARY
         echo "- **Title:** ${{ github.event.client_payload.title_text || inputs.title_text }}" >> $GITHUB_STEP_SUMMARY
+        echo "- **Processing Time:** ~90 seconds" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "### 📦 Artifact Download:" >> $GITHUB_STEP_SUMMARY
+        echo "The video is also saved as a GitHub artifact (see below) for 7 days." >> $GITHUB_STEP_SUMMARY

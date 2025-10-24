@@ -1,4 +1,4 @@
-name: Merge Videos FREE
+name: Merge Videos FREE (Updated)
 
 on:
   repository_dispatch:
@@ -14,12 +14,12 @@ on:
         description: 'Hook text overlay'
         required: true
         type: string
-        default: 'AMAZING'
+        default: 'AMAZING TEST'
       title_text:
         description: 'Title text overlay'
         required: true
         type: string
-        default: 'Viral Video'
+        default: 'Test Video Title'
 
 jobs:
   merge:
@@ -52,36 +52,113 @@ jobs:
         python merge-videos.py
         echo "video_created=true" >> $GITHUB_OUTPUT
         ls -la final.mp4
+        echo "FILE_SIZE=$(stat -c%s final.mp4)" >> $GITHUB_OUTPUT
     
-    - name: Upload to File.io
+    - name: Upload to Multiple Services
       id: upload
       run: |
-        # Upload to file.io (FREE, 14 days retention)
-        response=$(curl -F "file=@final.mp4" https://file.io)
-        echo "Response: $response"
-        VIDEO_URL=$(echo $response | python3 -c "import sys, json; print(json.load(sys.stdin)['link'])")
-        echo "VIDEO_URL=$VIDEO_URL" >> $GITHUB_OUTPUT
-        echo "Video uploaded to: $VIDEO_URL"
-        echo "$VIDEO_URL" > video_url.txt
+        echo "Uploading video ($(stat -c%s final.mp4) bytes)..."
+        
+        # Try multiple upload services for reliability
+        
+        # Option 1: Upload to 0x0.st (reliable, 512MB limit, 365 days)
+        echo "Trying 0x0.st..."
+        UPLOAD_URL=$(curl -F "file=@final.mp4" https://0x0.st)
+        
+        if [ ! -z "$UPLOAD_URL" ] && [[ $UPLOAD_URL == http* ]]; then
+          echo "✓ Upload successful to 0x0.st"
+          echo "VIDEO_URL=$UPLOAD_URL" >> $GITHUB_OUTPUT
+        else
+          echo "0x0.st failed, trying alternative..."
+          
+          # Option 2: Upload to tmpfiles.org (100MB limit, shorter retention)
+          UPLOAD_URL=$(curl -F "file=@final.mp4" https://tmpfiles.org/api/v1/upload | python3 -c "import sys, json; data = json.load(sys.stdin); print(data['data']['url'].replace('/tmpfiles.org/', '/tmpfiles.org/dl/'))" 2>/dev/null || echo "")
+          
+          if [ ! -z "$UPLOAD_URL" ] && [[ $UPLOAD_URL == http* ]]; then
+            echo "✓ Upload successful to tmpfiles.org"
+            echo "VIDEO_URL=$UPLOAD_URL" >> $GITHUB_OUTPUT
+          else
+            # Option 3: Upload to litterbox (1 hour retention, but reliable)
+            echo "Trying litterbox..."
+            UPLOAD_URL=$(curl -F "fileToUpload=@final.mp4" -F "time=1h" https://litterbox.catbox.moe/resources/internals/api.php)
+            
+            if [ ! -z "$UPLOAD_URL" ] && [[ $UPLOAD_URL == http* ]]; then
+              echo "✓ Upload successful to litterbox (1 hour retention)"
+              echo "VIDEO_URL=$UPLOAD_URL" >> $GITHUB_OUTPUT
+            else
+              echo "⚠ External upload failed, using GitHub artifacts only"
+              echo "VIDEO_URL=Use artifact download below" >> $GITHUB_OUTPUT
+            fi
+          fi
+        fi
+        
+        echo "Final URL: $UPLOAD_URL"
+        echo "$UPLOAD_URL" > video_url.txt
     
-    - name: Save Video as Artifact
+    - name: Save Video as Artifact (Always Available)
       uses: actions/upload-artifact@v4
       with:
-        name: final-video
+        name: final-video-${{ github.run_number }}
         path: |
           final.mp4
           video_url.txt
         retention-days: 7
+        compression-level: 6
+    
+    - name: Generate Direct GitHub Download Link
+      id: github-link
+      run: |
+        # Generate a reference to the artifact
+        ARTIFACT_URL="https://github.com/AhmedGaballah28/viral-video-processor/actions/runs/${{ github.run_id }}"
+        echo "ARTIFACT_URL=$ARTIFACT_URL" >> $GITHUB_OUTPUT
     
     - name: Create Summary
       run: |
         echo "## ✅ Video Processed Successfully!" >> $GITHUB_STEP_SUMMARY
         echo "" >> $GITHUB_STEP_SUMMARY
-        echo "### 📥 Download URL:" >> $GITHUB_STEP_SUMMARY
-        echo "${{ steps.upload.outputs.VIDEO_URL }}" >> $GITHUB_STEP_SUMMARY
+        
+        # Check if we have an external URL
+        if [[ "${{ steps.upload.outputs.VIDEO_URL }}" == http* ]]; then
+          echo "### 📥 Direct Download URL:" >> $GITHUB_STEP_SUMMARY
+          echo "### [${{ steps.upload.outputs.VIDEO_URL }}](${{ steps.upload.outputs.VIDEO_URL }})" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**⏱️ Link Expiration:**" >> $GITHUB_STEP_SUMMARY
+          if [[ "${{ steps.upload.outputs.VIDEO_URL }}" == *"0x0.st"* ]]; then
+            echo "- Valid for 365 days" >> $GITHUB_STEP_SUMMARY
+          elif [[ "${{ steps.upload.outputs.VIDEO_URL }}" == *"tmpfiles"* ]]; then
+            echo "- Valid for 1 hour" >> $GITHUB_STEP_SUMMARY
+          elif [[ "${{ steps.upload.outputs.VIDEO_URL }}" == *"litterbox"* ]]; then
+            echo "- Valid for 1 hour" >> $GITHUB_STEP_SUMMARY
+          fi
+        fi
+        
         echo "" >> $GITHUB_STEP_SUMMARY
-        echo "**Valid for:** 14 days" >> $GITHUB_STEP_SUMMARY
+        echo "### 📦 GitHub Artifact (Always Available for 7 days):" >> $GITHUB_STEP_SUMMARY
+        echo "[Download from Artifacts](${{ steps.github-link.outputs.ARTIFACT_URL }})" >> $GITHUB_STEP_SUMMARY
+        echo "Scroll down and click on **final-video-${{ github.run_number }}**" >> $GITHUB_STEP_SUMMARY
         echo "" >> $GITHUB_STEP_SUMMARY
         echo "### 📝 Video Details:" >> $GITHUB_STEP_SUMMARY
+        echo "- **File Size:** $(numfmt --to=iec-i --suffix=B ${{ steps.process.outputs.FILE_SIZE }})" >> $GITHUB_STEP_SUMMARY
         echo "- **Hook:** ${{ github.event.client_payload.hook_text || inputs.hook_text }}" >> $GITHUB_STEP_SUMMARY
         echo "- **Title:** ${{ github.event.client_payload.title_text || inputs.title_text }}" >> $GITHUB_STEP_SUMMARY
+        echo "- **Processing Time:** ~90 seconds" >> $GITHUB_STEP_SUMMARY
+        echo "- **Run ID:** ${{ github.run_id }}" >> $GITHUB_STEP_SUMMARY
+    
+    - name: Output for n8n
+      id: n8n-output
+      run: |
+        # Create JSON output for n8n to parse
+        cat > output.json << EOF
+        {
+          "success": true,
+          "video_url": "${{ steps.upload.outputs.VIDEO_URL }}",
+          "artifact_url": "${{ steps.github-link.outputs.ARTIFACT_URL }}",
+          "run_id": "${{ github.run_id }}",
+          "run_number": "${{ github.run_number }}",
+          "file_size": "${{ steps.process.outputs.FILE_SIZE }}",
+          "hook": "${{ github.event.client_payload.hook_text || inputs.hook_text }}",
+          "title": "${{ github.event.client_payload.title_text || inputs.title_text }}"
+        }
+        EOF
+        
+        echo "::notice title=Video Ready::$(cat output.json)"
