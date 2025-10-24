@@ -40,19 +40,6 @@ def analyze_video(video_file):
             print(f"  Audio codec: {audio_stream.get('codec_name', 'unknown')}")
             print(f"  Sample rate: {audio_stream.get('sample_rate', 'unknown')} Hz")
             print(f"  Channels: {audio_stream.get('channels', 'unknown')}")
-            print(f"  Bitrate: {audio_stream.get('bit_rate', 'unknown')}")
-            
-            # Check audio volume
-            volume_cmd = ['ffmpeg', '-i', video_file, '-af', 'volumedetect', 
-                         '-f', 'null', '-']
-            volume_result = subprocess.run(volume_cmd, capture_output=True, text=True)
-            
-            # Look for volume info in stderr
-            if 'mean_volume' in volume_result.stderr:
-                for line in volume_result.stderr.split('\n'):
-                    if 'mean_volume' in line or 'max_volume' in line:
-                        print(f"  {line.strip()}")
-            
             return True
         else:
             print("  No audio stream found")
@@ -85,14 +72,14 @@ def merge_videos_with_text(videos, hook, title, output="final.mp4"):
             print(f"ERROR downloading video {i}: {e}")
             sys.exit(1)
     
-    print(f"\n🔊 Audio Status: {'Found audio streams' if has_real_audio else 'No audio found - will add music'}")
+    print(f"\n🔊 Audio Status: {'Found audio streams' if has_real_audio else 'No audio found - will add background audio'}")
     
     # Build FFmpeg command
-    # For videos without sound, we'll add background music
     if not has_real_audio:
-        print("🎵 Adding background music since videos have no audio...")
+        print("🎵 Adding background audio track...")
         
-        # Generate a simple tone/music using FFmpeg audio source
+        # Method 1: Use sine wave for testing (audible)
+        # This creates a soft 440Hz tone (A note) with fade in/out
         ffmpeg_cmd = [
             'ffmpeg'
         ]
@@ -101,13 +88,13 @@ def merge_videos_with_text(videos, hook, title, output="final.mp4"):
         for video_file in video_files:
             ffmpeg_cmd.extend(['-i', video_file])
         
-        # Add generated audio (sine wave for testing, you can replace with music file)
+        # Add generated audio - soft sine wave with fade
         ffmpeg_cmd.extend([
             '-f', 'lavfi',
-            '-i', 'anoisesrc=d=20:c=stereo:r=48000:a=0.01'  # Very quiet white noise for testing
+            '-i', 'sine=frequency=440:duration=20:sample_rate=48000'  # 440Hz sine wave
         ])
         
-        # Complex filter for concatenation with audio
+        # Complex filter for concatenation
         filter_complex = ""
         
         # Scale and pad each video
@@ -124,13 +111,16 @@ def merge_videos_with_text(videos, hook, title, output="final.mp4"):
             f"x=(w-text_w)/2:y=150:enable='between(t,0,3)',"
             f"drawtext=text='{title}':fontfile=/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf:"
             f"fontsize=50:fontcolor=white:borderw=3:bordercolor=black:"
-            f"x=(w-text_w)/2:y=h-150:enable='between(t,17,20)'[final]"
+            f"x=(w-text_w)/2:y=h-150:enable='between(t,17,20)'[final];"
         )
+        
+        # Process audio - add fade and reduce volume
+        filter_complex += "[4:a]afade=t=in:st=0:d=1,afade=t=out:st=18:d=2,volume=0.1[audio]"
         
         ffmpeg_cmd.extend([
             '-filter_complex', filter_complex,
             '-map', '[final]',
-            '-map', '4:a',  # Map the generated audio
+            '-map', '[audio]',
             '-c:v', 'libx264',
             '-preset', 'fast',
             '-crf', '23',
@@ -143,28 +133,49 @@ def merge_videos_with_text(videos, hook, title, output="final.mp4"):
             output
         ])
     else:
-        # Original code for videos WITH audio
-        print("🔊 Using original audio from videos...")
+        # For videos WITH audio - concatenate properly
+        print("🔊 Preserving original audio from videos...")
         
-        # Create concat file
-        with open("concat.txt", "w") as f:
-            for video_file in video_files:
-                f.write(f"file '{os.path.abspath(video_file)}'\n")
+        ffmpeg_cmd = ['ffmpeg']
         
-        ffmpeg_cmd = [
-            'ffmpeg',
-            '-f', 'concat',
-            '-safe', '0',
-            '-i', 'concat.txt',
-            '-vf', (
-                f"scale=1080:1920:force_original_aspect_ratio=decrease,pad=1080:1920:(ow-iw)/2:(oh-ih)/2,"
-                f"drawtext=text='{hook}':fontfile=/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf:"
-                f"fontsize=80:fontcolor=yellow:borderw=4:bordercolor=black:"
-                f"x=(w-text_w)/2:y=150:enable='between(t,0,3)',"
-                f"drawtext=text='{title}':fontfile=/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf:"
-                f"fontsize=50:fontcolor=white:borderw=3:bordercolor=black:"
-                f"x=(w-text_w)/2:y=h-150:enable='between(t,17,20)'"
-            ),
+        # Add all inputs
+        for video_file in video_files:
+            ffmpeg_cmd.extend(['-i', video_file])
+        
+        # Complex filter to handle both video and audio
+        filter_complex = ""
+        
+        # Process each video
+        for i in range(4):
+            filter_complex += f"[{i}:v]scale=1080:1920:force_original_aspect_ratio=decrease,pad=1080:1920:(ow-iw)/2:(oh-ih)/2,setsar=1[v{i}];"
+            # If video has audio, prepare it
+            filter_complex += f"[{i}:a]aresample=48000,aformat=fltp[a{i}];" if has_real_audio else ""
+        
+        # Concatenate with audio
+        if has_real_audio:
+            filter_complex += "[v0][a0][v1][a1][v2][a2][v3][a3]concat=n=4:v=1:a=1[outv][outa];"
+        else:
+            filter_complex += "[v0][v1][v2][v3]concat=n=4:v=1:a=0[outv];"
+        
+        # Add text overlays
+        filter_complex += (
+            f"[outv]drawtext=text='{hook}':fontfile=/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf:"
+            f"fontsize=80:fontcolor=yellow:borderw=4:bordercolor=black:"
+            f"x=(w-text_w)/2:y=150:enable='between(t,0,3)',"
+            f"drawtext=text='{title}':fontfile=/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf:"
+            f"fontsize=50:fontcolor=white:borderw=3:bordercolor=black:"
+            f"x=(w-text_w)/2:y=h-150:enable='between(t,17,20)'[final]"
+        )
+        
+        ffmpeg_cmd.extend([
+            '-filter_complex', filter_complex,
+            '-map', '[final]'
+        ])
+        
+        if has_real_audio:
+            ffmpeg_cmd.extend(['-map', '[outa]'])
+        
+        ffmpeg_cmd.extend([
             '-c:v', 'libx264',
             '-preset', 'fast',
             '-crf', '23',
@@ -173,16 +184,17 @@ def merge_videos_with_text(videos, hook, title, output="final.mp4"):
             '-movflags', '+faststart',
             '-y',
             output
-        ]
+        ])
     
     print("\n🎬 Merging videos with text overlays...")
+    print(f"Command: ffmpeg {' '.join(ffmpeg_cmd[1:10])}...")
     
     try:
         result = subprocess.run(ffmpeg_cmd, check=True, capture_output=True, text=True)
         print("✓ Video merged successfully!")
     except subprocess.CalledProcessError as e:
         print(f"ERROR: FFmpeg failed")
-        print(f"STDERR: {e.stderr[-2000:]}")  # Last 2000 chars of error
+        print(f"STDERR: {e.stderr[-2000:]}")
         sys.exit(1)
     
     # Verify and analyze output
@@ -201,8 +213,6 @@ def merge_videos_with_text(videos, hook, title, output="final.mp4"):
             os.remove(video_file)
         except:
             pass
-    if os.path.exists("concat.txt"):
-        os.remove("concat.txt")
     
     return output
 
