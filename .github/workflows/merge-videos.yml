@@ -1,0 +1,67 @@
+name: Merge Videos FREE
+
+on:
+  repository_dispatch:
+    types: [merge-videos]
+  workflow_dispatch:
+    inputs:
+      video_urls:
+        description: 'JSON array of 4 video URLs'
+        required: true
+        type: string
+      hook_text:
+        description: 'Hook text overlay'
+        required: true
+        type: string
+      title_text:
+        description: 'Title text overlay'
+        required: true
+        type: string
+
+jobs:
+  merge:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v3
+    
+    - name: Setup Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.10'
+    
+    - name: Setup FFmpeg
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y ffmpeg
+        ffmpeg -version
+    
+    - name: Process Videos
+      env:
+        VIDEO_URLS: ${{ github.event.client_payload.video_urls || inputs.video_urls }}
+        HOOK_TEXT: ${{ github.event.client_payload.hook_text || inputs.hook_text }}
+        TITLE_TEXT: ${{ github.event.client_payload.title_text || inputs.title_text }}
+      run: |
+        python merge-videos.py
+    
+    - name: Upload to Free Cloud Storage
+      id: upload
+      run: |
+        # Upload to file.io (FREE, 14 days retention)
+        response=$(curl -F "file=@final.mp4" https://file.io)
+        url=$(echo $response | jq -r '.link')
+        echo "VIDEO_URL=$url" >> $GITHUB_OUTPUT
+        echo "Uploaded to: $url"
+    
+    - name: Save Video as Artifact
+      uses: actions/upload-artifact@v3
+      with:
+        name: final-video
+        path: final.mp4
+        retention-days: 7
+    
+    - name: Return URL
+      run: |
+        echo "::notice title=Video Ready::${{ steps.upload.outputs.VIDEO_URL }}"
