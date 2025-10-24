@@ -5,12 +5,25 @@ import json
 import urllib.request
 import subprocess
 from pathlib import Path
+import time
 
-def download_video(url, filename):
-    """Download video from URL"""
-    print(f"Downloading {filename}...")
-    urllib.request.urlretrieve(url, filename)
-    return filename
+def download_video(url, filename, max_retries=3):
+    """Download video from URL with retry logic"""
+    for attempt in range(max_retries):
+        try:
+            print(f"Downloading {filename} (attempt {attempt + 1})...")
+            urllib.request.urlretrieve(url, filename)
+            # Verify file was downloaded
+            if os.path.exists(filename) and os.path.getsize(filename) > 0:
+                print(f"✓ Successfully downloaded {filename}")
+                return filename
+        except Exception as e:
+            print(f"⚠ Download attempt {attempt + 1} failed: {e}")
+            if attempt < max_retries - 1:
+                time.sleep(2)  # Wait before retry
+            else:
+                raise
+    return None
 
 def merge_videos_with_text(videos, hook, title, output="final.mp4"):
     """Merge 4 videos with text overlays using FFmpeg"""
@@ -19,8 +32,16 @@ def merge_videos_with_text(videos, hook, title, output="final.mp4"):
     video_files = []
     for i, video_url in enumerate(videos):
         filename = f"video_{i}.mp4"
-        download_video(video_url, filename)
-        video_files.append(filename)
+        try:
+            downloaded = download_video(video_url, filename)
+            if downloaded:
+                video_files.append(filename)
+            else:
+                print(f"ERROR: Failed to download video {i}")
+                sys.exit(1)
+        except Exception as e:
+            print(f"ERROR downloading video {i}: {e}")
+            sys.exit(1)
     
     # Create concat file
     with open("concat.txt", "w") as f:
@@ -48,33 +69,57 @@ def merge_videos_with_text(videos, hook, title, output="final.mp4"):
         '-crf', '23',
         '-c:a', 'aac',
         '-b:a', '128k',
+        '-movflags', '+faststart',  # Optimize for streaming
         '-y',
         output
     ]
     
     print("Merging videos with text overlays...")
-    subprocess.run(ffmpeg_cmd, check=True)
+    try:
+        result = subprocess.run(ffmpeg_cmd, check=True, capture_output=True, text=True)
+        print("✓ Video merged successfully!")
+    except subprocess.CalledProcessError as e:
+        print(f"ERROR: FFmpeg failed: {e.stderr}")
+        sys.exit(1)
+    
+    # Verify output file
+    if not os.path.exists(output) or os.path.getsize(output) == 0:
+        print("ERROR: Output file not created or is empty")
+        sys.exit(1)
+    
+    print(f"✓ Video created: {output} ({os.path.getsize(output) / 1024 / 1024:.2f} MB)")
     
     # Clean up downloaded files
     for video_file in video_files:
-        os.remove(video_file)
-    os.remove("concat.txt")
+        try:
+            os.remove(video_file)
+        except:
+            pass
+    try:
+        os.remove("concat.txt")
+    except:
+        pass
     
-    print(f"Video created: {output}")
     return output
 
 if __name__ == "__main__":
     # Get inputs from environment variables (set by GitHub Actions)
     videos = json.loads(os.environ.get('VIDEO_URLS', '[]'))
-    hook = os.environ.get('HOOK_TEXT', '')
-    title = os.environ.get('TITLE_TEXT', '')
+    hook = os.environ.get('HOOK_TEXT', 'AMAZING')
+    title = os.environ.get('TITLE_TEXT', 'Viral Video')
+    
+    print(f"Processing {len(videos)} videos...")
+    print(f"Hook: {hook}")
+    print(f"Title: {title}")
     
     if not videos or len(videos) != 4:
-        print("Error: Need exactly 4 video URLs")
+        print("ERROR: Need exactly 4 video URLs")
         sys.exit(1)
     
     # Process videos
-    output_file = merge_videos_with_text(videos, hook, title)
-    
-    # Set output for GitHub Actions
-    print(f"::set-output name=video_file::{output_file}")
+    try:
+        output_file = merge_videos_with_text(videos, hook, title)
+        print(f"SUCCESS: {output_file}")
+    except Exception as e:
+        print(f"FATAL ERROR: {e}")
+        sys.exit(1)

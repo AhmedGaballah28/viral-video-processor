@@ -14,12 +14,12 @@ on:
         description: 'Hook text overlay'
         required: true
         type: string
-        default: 'AMAZING TEST'
+        default: 'AMAZING'
       title_text:
         description: 'Title text overlay'
         required: true
         type: string
-        default: 'Test Video Title'
+        default: 'Viral Video'
 
 jobs:
   merge:
@@ -28,10 +28,10 @@ jobs:
     
     steps:
     - name: Checkout code
-      uses: actions/checkout@v3
+      uses: actions/checkout@v4
     
     - name: Setup Python
-      uses: actions/setup-python@v4
+      uses: actions/setup-python@v5
       with:
         python-version: '3.10'
     
@@ -53,19 +53,19 @@ jobs:
         echo "video_created=true" >> $GITHUB_OUTPUT
         ls -la final.mp4
     
-    - name: Upload to File.io (FREE hosting)
+    - name: Upload to File.io
       id: upload
       run: |
-        # Upload to file.io (FREE, 14 days retention, no size limit)
+        # Upload to file.io (FREE, 14 days retention)
         response=$(curl -F "file=@final.mp4" https://file.io)
         echo "Response: $response"
-        VIDEO_URL=$(echo $response | grep -o '"link":"[^"]*' | sed 's/"link":"//')
+        VIDEO_URL=$(echo $response | python3 -c "import sys, json; print(json.load(sys.stdin)['link'])")
         echo "VIDEO_URL=$VIDEO_URL" >> $GITHUB_OUTPUT
         echo "Video uploaded to: $VIDEO_URL"
         echo "$VIDEO_URL" > video_url.txt
     
     - name: Save Video as Artifact
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@v4
       with:
         name: final-video
         path: |
@@ -77,12 +77,11 @@ jobs:
       run: |
         echo "## ✅ Video Processed Successfully!" >> $GITHUB_STEP_SUMMARY
         echo "" >> $GITHUB_STEP_SUMMARY
-        echo "### Download URL:" >> $GITHUB_STEP_SUMMARY
+        echo "### 📥 Download URL:" >> $GITHUB_STEP_SUMMARY
         echo "${{ steps.upload.outputs.VIDEO_URL }}" >> $GITHUB_STEP_SUMMARY
         echo "" >> $GITHUB_STEP_SUMMARY
         echo "**Valid for:** 14 days" >> $GITHUB_STEP_SUMMARY
         echo "" >> $GITHUB_STEP_SUMMARY
-        echo "### Video Details:" >> $GITHUB_STEP_SUMMARY
+        echo "### 📝 Video Details:" >> $GITHUB_STEP_SUMMARY
         echo "- **Hook:** ${{ github.event.client_payload.hook_text || inputs.hook_text }}" >> $GITHUB_STEP_SUMMARY
         echo "- **Title:** ${{ github.event.client_payload.title_text || inputs.title_text }}" >> $GITHUB_STEP_SUMMARY
-        echo "- **Processing Time:** ~90 seconds" >> $GITHUB_STEP_SUMMARY
